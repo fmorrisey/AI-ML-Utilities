@@ -30,7 +30,7 @@ def gpu_power_plot(path):
     axs[1].set_ylabel("Energy (Wh)"); axs[1].set_xlabel("Time"); axs[1].grid(True)
 
     plt.tight_layout()
-    out_png = "gpu_power_plot.png"
+    out_png = f"gpu_power_plot_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.png"
     fig.savefig(out_png, dpi=150)
     print(f"Saved plot: {out_png}")
 
