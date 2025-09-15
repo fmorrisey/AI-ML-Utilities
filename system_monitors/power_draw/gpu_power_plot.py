@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, glob, pandas as pd, matplotlib.pyplot as plt
+import argparse, glob, pandas as pd, matplotlib.pyplot as plt, os
 
 def gpu_power_plot(path):
     files = sorted(glob.glob(path))
@@ -31,7 +31,9 @@ def gpu_power_plot(path):
 
     plt.tight_layout()
     out_png = f"gpu_power_plot_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.png"
-    fig.savefig(out_png, dpi=150)
+    out_dir = "./power_plots"
+    os.makedirs(out_dir, exist_ok=True)
+    fig.savefig(os.path.join(out_dir, out_png), dpi=150)
     print(f"Saved plot: {out_png}")
 
     print("\n=== Energy summary ===")
