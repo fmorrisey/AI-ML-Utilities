@@ -212,3 +212,15 @@ __marimo__/
 system_monitors/power_draw/logs/*.csv
 system_monitors/power_draw/gpu_power_logger.out
 *.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.log
+*.out
+*.pid
+*.gz
+*.zip
+*.tar
+*.tar.gz
