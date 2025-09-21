@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse, csv, datetime as dt, os, signal, subprocess, sys, time
 from collections import defaultdict, deque
+import uuid
 
 def parse_args():
     p = argparse.ArgumentParser(
@@ -16,6 +17,8 @@ def parse_args():
                    help="Log file base name (default: gpu_power).")
     p.add_argument("--nvidia_smi", default="nvidia-smi",
                    help="Path to nvidia-smi if not on PATH.")
+    p.add_argument("--run-id", default=None,
+                   help="Run identifier to tag this logging run (default: auto-generated).")
     return p.parse_args()
 
 class Rolling:
@@ -41,8 +44,13 @@ def now_iso():
 def main():
     args = parse_args()
     os.makedirs(args.outdir, exist_ok=True)
+
+    # Run id: use provided or generate short uuid
+    run_id = args.run_id or dt.datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
+
     stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = os.path.join(args.outdir, f"{args.basename}_{stamp}.csv")
+    # include run_id in filename for easier discovery
+    out_path = os.path.join(args.outdir, f"{args.basename}_{stamp}_{run_id}.csv")
 
     # Per-GPU accumulators
     running_sum = defaultdict(float)
@@ -50,9 +58,11 @@ def main():
     rolling = defaultdict(lambda: Rolling(args.window))
     vmax = defaultdict(lambda: 0.0)
     # For energy (Wh), we integrate power over time between samples
-    last_ts = None
-    energy_Wh = defaultdict(float)  # sum(power * dt)/3600 per GPU
+    energy_Wh = defaultdict(float)  # cumulative per GPU
 
+    # For block-detection so that all GPUs in the same nvidia-smi tick use same dt
+    last_block_ts = None
+    current_block_dt_s = 0.0
     # Handle clean shutdown
     alive = {"run": True}
     def _stop(signum, frame):
@@ -74,7 +84,8 @@ def main():
         writer = csv.writer(f)
         writer.writerow([
             "timestamp", "gpu_index", "gpu_name", "power_w",
-            "running_avg_w", f"rolling_avg_{args.window}s_w", "vmax_w"
+            "running_avg_w", f"rolling_avg_{args.window}s_w", "vmax_w",
+            "energy_Wh", "total_energy_Wh", "run_id"
         ])
 
         print(f"[gpu_power_logger] writing -> {out_path}")
@@ -88,15 +99,12 @@ def main():
                 time.sleep(0.05)
                 continue
 
-            # A single nvidia-smi tick prints one line per GPU.
-            # We'll attach the same timestamp to all GPUs in that tick.
-            # nvidia-smi prints in blocks; we handle per-line.
+            # Timestamp for this line
             ts = time.time()
             ts_iso = now_iso()
 
             try:
                 parts = [p.strip() for p in line.strip().split(",")]
-                # Expect: index, name, power
                 if len(parts) < 3:
                     continue
                 gpu_idx = int(parts[0])
@@ -105,24 +113,37 @@ def main():
             except Exception:
                 continue
 
+            # Detect start of a new nvidia-smi block (tick)
+            threshold = max(0.05, args.interval * 0.5)
+            if (last_block_ts is None) or ((ts - last_block_ts) > threshold):
+                # new block: compute dt for this block; no integration for first ever block
+                if last_block_ts is None:
+                    current_block_dt_s = 0.0
+                else:
+                    current_block_dt_s = ts - last_block_ts
+                last_block_ts = ts
+            # else: same block, reuse current_block_dt_s
+
             # Update stats
             running_sum[gpu_idx] += power_w
             running_cnt[gpu_idx] += 1
             vmax[gpu_idx] = max(vmax[gpu_idx], power_w)
             rolling[gpu_idx].add(ts, power_w)
 
-            # Energy integration (use dt from last_ts to now for all GPUs uniformly)
-            if last_ts is not None:
-                dt_s = ts - last_ts
-                # Approximate: apply current power to this dt interval (OK for 1s sampling)
-                energy_Wh[gpu_idx] += (power_w * dt_s) / 3600.0
-            # Write row
+            # Energy integration using the block dt (applied uniformly to all GPUs in the block)
+            if current_block_dt_s > 0:
+                energy_Wh[gpu_idx] += (power_w * current_block_dt_s) / 3600.0
+
+            # Write row (include per-GPU cumulative energy and total across GPUs)
             avg = running_sum[gpu_idx] / max(1, running_cnt[gpu_idx])
             ravg = rolling[gpu_idx].avg()
-            writer.writerow([ts_iso, gpu_idx, gpu_name, f"{power_w:.3f}", f"{avg:.3f}", f"{ravg:.3f}", f"{vmax[gpu_idx]:.3f}"])
+            total_e = sum(energy_Wh.values())
+            writer.writerow([
+                ts_iso, gpu_idx, gpu_name, f"{power_w:.3f}",
+                f"{avg:.3f}", f"{ravg:.3f}", f"{vmax[gpu_idx]:.3f}",
+                f"{energy_Wh[gpu_idx]:.6f}", f"{total_e:.6f}", run_id
+            ])
             f.flush()
-
-            last_ts = ts
 
             # Optional sub-second sleep (nvidia-smi -l is integer seconds)
             if args.interval < 1.0:
@@ -141,6 +162,8 @@ def main():
         cnt = running_cnt[gpu_idx]
         avg = running_sum[gpu_idx] / cnt if cnt else 0.0
         print(f"GPU {gpu_idx}: samples={cnt}, avg={avg:.2f} W, max={vmax[gpu_idx]:.2f} W, energy≈{energy_Wh[gpu_idx]:.3f} Wh")
+    total_run_energy = sum(energy_Wh.values())
+    print(f"Total energy for run {run_id}: ≈ {total_run_energy:.3f} Wh")
     print(f"Log saved: {out_path}")
 
 if __name__ == "__main__":
