@@ -6,11 +6,14 @@ Used to support the followin projects:
 
 Use the following folder structure to support your AI/ML workflows
 
+``` directory
 root/
 ├─ ai-ml-project-1/
 ├─ ai-ml-project-2/
 ├─ ai-ml-utilities/
 ├─ run_ai_ml_workflow.sh
+
+```
 
 ### Example usagage
 `./run_ai_ml_workflow {path to your workflow}`
