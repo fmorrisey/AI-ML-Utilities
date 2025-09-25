@@ -52,6 +52,26 @@ def main():
     # include run_id in filename for easier discovery
     out_path = os.path.join(args.outdir, f"{args.basename}_{stamp}_{run_id}.csv")
 
+    # --- New: determine CUDA-visible devices (if any) ---
+    cuda_env = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    allowed_idxs = set()
+    allowed_uuids = set()
+    if cuda_env:
+        tokens = [t.strip() for t in cuda_env.split(",") if t.strip() != ""]
+        for t in tokens:
+            # numeric index
+            if t.isdigit():
+                try:
+                    allowed_idxs.add(int(t))
+                except Exception:
+                    pass
+            else:
+                # accept UUID-like tokens (e.g. GPU-....) or any non-numeric token
+                allowed_uuids.add(t)
+        allowed_any = True
+    else:
+        allowed_any = False
+
     # Per-GPU accumulators
     running_sum = defaultdict(float)
     running_cnt = defaultdict(int)
@@ -70,10 +90,10 @@ def main():
     for s in (signal.SIGINT, signal.SIGTERM):
         signal.signal(s, _stop)
 
-    # Start nvidia-smi stream (noheader + nounits makes parsing easy)
+    # Start nvidia-smi stream (include uuid so we can filter by CUDA_VISIBLE_DEVICES)
     cmd = [
         args.nvidia_smi,
-        "--query-gpu=index,name,power.draw",
+        "--query-gpu=index,name,uuid,power.draw",
         "--format=csv,noheader,nounits",
         "-l", str(max(1, int(args.interval)))  # nvidia-smi uses integer seconds
     ]
@@ -88,7 +108,11 @@ def main():
             "energy_Wh", "total_energy_Wh", "run_id"
         ])
 
-        print(f"[gpu_power_logger] writing -> {out_path}")
+        if allowed_any:
+            print(f"[gpu_power_logger] CUDA_VISIBLE_DEVICES set, filtering to indices={sorted(allowed_idxs)} uuids={sorted(allowed_uuids)}")
+        else:
+            print(f"[gpu_power_logger] writing -> {out_path}")
+
         next_sleep = 0.0
         while alive["run"]:
             line = proc.stdout.readline()
@@ -105,13 +129,22 @@ def main():
 
             try:
                 parts = [p.strip() for p in line.strip().split(",")]
-                if len(parts) < 3:
+                # now expecting: index, name, uuid, power
+                if len(parts) < 4:
                     continue
                 gpu_idx = int(parts[0])
                 gpu_name = parts[1]
-                power_w = float(parts[2])
+                gpu_uuid = parts[2]
+                power_w = float(parts[3])
             except Exception:
                 continue
+
+            # If CUDA_VISIBLE_DEVICES was set, skip GPUs not in that set.
+            if allowed_any:
+                # match either numeric index or uuid token
+                if (gpu_idx not in allowed_idxs) and (gpu_uuid not in allowed_uuids):
+                    # skip logging this GPU as it's not in CUDA_VISIBLE_DEVICES
+                    continue
 
             # Detect start of a new nvidia-smi block (tick)
             threshold = max(0.05, args.interval * 0.5)

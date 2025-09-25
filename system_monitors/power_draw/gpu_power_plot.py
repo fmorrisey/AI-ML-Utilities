@@ -45,7 +45,7 @@ def gpu_power_plot(path, run_id=None):
     axs[0].set_ylabel("Power (W)"); axs[0].legend(); axs[0].grid(True)
 
     energy_Wh.plot(ax=axs[1])
-    axs[1].set_ylabel("Energy (Wh)"); axs[1].set_xlabel("Time"); axs[1].grid(True)
+    axs[1].set_ylabel("Total Energy (Wh)"); axs[1].set_xlabel("Time"); axs[1].grid(True)
 
     plt.tight_layout()
     run_tag = f"_{run_id}" if run_id else ""
